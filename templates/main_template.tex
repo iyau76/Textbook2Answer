@@ -1,0 +1,103 @@
+\documentclass[12pt, a4paper]{ctexart}
+% --- 页面与版式 ---
+\usepackage[
+    a4paper,
+    top=1.2cm,
+    bottom=2cm,
+    left=2.6cm,
+    right=2.6cm,
+    bindingoffset=0.2cm
+]{geometry}
+\usepackage{fancyhdr}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{booktabs}
+\usepackage{threeparttable}
+\usepackage{subcaption}
+\usepackage{cancel}
+\usepackage{mathrsfs}
+\linespread{1}\selectfont
+\setlength{\parindent}{2em}
+\ctexset{ abstractname = {\zihao{-4}\heiti 摘\quad 要} }
+% --- 数学公式 ---
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsfonts}
+\usepackage{esint}
+\usepackage{amsthm}
+\usepackage{graphicx}
+\usepackage{subcaption}
+\usepackage{booktabs}
+\usepackage{float}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{cite}
+\usepackage{hyperref}
+\usepackage{tcolorbox}
+\tcbuselibrary{skins,breakable}
+% --- 章节标题格式 ---
+\ctexset{
+    section = {
+        format = \heiti\zihao{-4}\raggedright,
+        name = {},
+        aftername = {、},
+        number = \chinese{section}
+    },
+    subsection = {
+        format = \heiti\zihao{-4}\raggedright,
+        indent = 2em,
+        number = \arabic{subsection},
+        aftername = {.\ }
+    }
+}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+
+\title{\heiti\zihao{-3} {{ book_title }} 参考答案}
+\author{\kaishu\zihao{5} {{ author_model }}}
+\date{\today}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+{% for chapter in chapters %}
+\section{ {{ chapter.chapter_name }} }
+{% for task in chapter.tasks %}
+\subsection*{ {{ task.question_id }} }
+\addcontentsline{toc}{subsection}{ {{ task.question_id }} }
+\setcounter{equation}{0}
+\renewcommand{\theequation}{ {{ task.question_id }}-\arabic{equation} }
+
+\textbf{【题目】} {{ task.content }}
+
+\textbf{【解答】}
+{{ task.solution_process }}
+
+{% if task.alternative_methods %}
+\textbf{【另解】}
+{{ task.alternative_methods }}
+{% endif %}
+
+{% if task.knowledge_points %}
+\begin{tcolorbox}[colback=blue!5!white,colframe=blue!75!black,title=基础知识点总结]
+{{ task.knowledge_points }}
+\end{tcolorbox}
+{% endif %}
+
+
+
+{% if task.extensions %}
+\begin{tcolorbox}[colback=red!5!white,colframe=red!75!black,title=高级拓展]
+{{ task.extensions }}
+\end{tcolorbox}
+{% endif %}
+
+{% endfor %}
+{% endfor %}
+\end{document}

@@ -1,0 +1,19 @@
+{
+  "book_title": "量子力学",
+  "author_model": "gemini-3-flash-preview",
+  "pdf_path": "input/量子力学讲义.pdf",
+  "chapters": [
+    {
+      "chapter_name": "第一章 量子力学的历史渊源",
+      "pages": [15]
+    },
+    {
+      "chapter_name": "第二章 波函数与 Schrödinger 方程",
+      "pages": [21, 27]
+    },
+    {
+      "chapter_name": "第三章 一维势场中的粒子",
+      "pages": [31, 35, 38, 41]
+    }
+  ]
+}

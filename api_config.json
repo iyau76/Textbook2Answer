@@ -1,0 +1,34 @@
+{
+    "deepseek": {
+        "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+        "api_key": "",
+        "model": "deepseek-v3-2-251201",
+        "max_tokens": 16384
+    },
+    "glm46": {
+        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+        "api_key": "",
+        "model": "glm-4.6v"
+    },
+    "gemini": {
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/",
+        "api_version": "2024-03-01-preview",
+        "api_key": "",
+        "model": "gemini-3-flash-preview"
+    },
+    "gpt5": {
+        "base_url": "...",
+        "api_version": "...",
+        "api_key": "...",
+        "model": "gpt-5-chat-2025-08-07"
+    },
+    "claude": {
+        "base_url": "...",
+        "api_key": "..."
+    },
+    "custom1": {
+        "base_url": "https://api.gemai.cc/v1/chat/completions",
+        "api_key": "",
+        "model": "gpt-5.2"
+    }
+}
