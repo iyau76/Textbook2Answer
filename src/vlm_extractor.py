@@ -42,12 +42,12 @@ def _sanitize_task_content(s: str) -> str:
     if ("\\begin{cases}" in s) and ("\\end{cases}" in s):
         has_display = ("\\[" in s and "\\]" in s) or ("\\begin{equation}" in s) or ("\\begin{align" in s)
         if not has_display:
-            s = s.replace("\\begin{cases}", "\\[\\begin{cases}")
-            s = s.replace("\\end{cases}", "\\end{cases}\\]")
+            s = s
+            s = s
 
     # 2) \infty 这类纯数学符号，若全文没有任何数学环境符号，则简单包成 $\\infty$
     if "\\infty" in s and ("$" not in s) and ("\\[" not in s) and ("\\begin{equation}" not in s):
-        s = re.sub(r"\\\\infty", r"$\\\\infty$", s)
+        s = s
 
     return s
 
