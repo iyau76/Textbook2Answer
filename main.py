@@ -7,6 +7,7 @@ Textbook2Answer 主程序入口。
 import argparse
 from pathlib import Path
 
+from src.logger import logger, setup_log_file
 from src.pdf_processor import get_output_base, load_chapter_config, run as run_pdf
 from src.vlm_extractor import run as run_vlm
 from src.reasoning_solver import run as run_solver
@@ -46,23 +47,24 @@ def main():
             pdf_path = root / "input" / "textbook.pdf"
 
     output_base = get_output_base(root, config_path)
+    setup_log_file(output_base / "run.log")
     extract_provider = args.extract_provider or args.provider
     solve_provider = args.solve_provider or args.provider
 
     if args.only_latex:
         run_latex(config_path=config_path, output_base=output_base)
-        print(f"已生成 {output_base / 'final_solution.tex'}")
+        logger.info("已生成 %s", output_base / "final_solution.tex")
         return
 
     if not args.skip_pdf:
-        print("Phase: PDF 切片...")
+        logger.info("Phase 1: PDF 切片...")
         run_pdf(config_path=config_path, pdf_path=pdf_path, output_base=output_base)
-        print(f"PDF 切片完成 -> {output_base / 'images'}")
+        logger.info("PDF 切片完成 -> %s", output_base / "images")
     else:
-        print("跳过 PDF 切片。")
+        logger.info("跳过 PDF 切片。")
 
     if not args.skip_extract:
-        print("Phase: VLM 提取习题...")
+        logger.info("Phase 2: VLM 提取习题...")
         run_vlm(
             config_path=config_path,
             pdf_path=pdf_path,
@@ -70,25 +72,25 @@ def main():
             provider=extract_provider,
             model=args.extract_model,
         )
-        print(f"提取完成 -> {output_base / 'extracted_tasks.json'}")
+        logger.info("提取完成 -> %s", output_base / "extracted_tasks.json")
     else:
-        print("跳过 VLM 提取。")
+        logger.info("跳过 VLM 提取。")
 
     if not args.skip_solve:
-        print("Phase: 推理求解...")
+        logger.info("Phase 3: 推理求解...")
         run_solver(
             output_base=output_base,
             config_path=config_path,
             provider=solve_provider,
             model=args.solve_model,
         )
-        print(f"求解完成 -> {output_base / 'solved_answers.json'}")
+        logger.info("求解完成 -> %s", output_base / "solved_answers.json")
     else:
-        print("跳过推理求解。")
+        logger.info("跳过推理求解。")
 
-    print("Phase: LaTeX 组装...")
+    logger.info("Phase 4: LaTeX 组装...")
     run_latex(config_path=config_path, output_base=output_base)
-    print(f"已生成 {output_base / 'final_solution.tex'}。请使用 xelatex 等本地编译得到 PDF。")
+    logger.info("已生成 %s。请使用 xelatex 等本地编译得到 PDF。", output_base / "final_solution.tex")
 
 
 if __name__ == "__main__":

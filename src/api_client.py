@@ -6,16 +6,36 @@
 """
 import json
 import base64
-import os
 import time
 from pathlib import Path
 
 import requests
 
+from .logger import logger
+
 
 def _load_config(config_path: str | None = None) -> dict:
+    """
+    加载 api_config.json。
+    若未指定路径，则按优先级查找：
+      1. <project_root>/config/api_config.json
+      2. <project_root>/api_config.json  （向后兼容）
+    """
     if config_path is None:
-        config_path = Path(__file__).resolve().parent.parent / "api_config.json"
+        root = Path(__file__).resolve().parent.parent
+        candidates = [
+            root / "config" / "api_config.json",
+            root / "api_config.json",
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                config_path = candidate
+                break
+        if config_path is None:
+            raise FileNotFoundError(
+                "未找到 api_config.json。"
+                "请在项目根目录或 config/ 子目录下创建该文件。"
+            )
     with open(config_path, "r", encoding="utf-8") as f:
         return json.load(f)
 
@@ -37,6 +57,44 @@ def _image_to_base64(image_path: str, mime_type: str | None = None) -> tuple[str
             ".gif": "image/gif",
         }.get(suffix, "image/png")
     return b64, mime_type
+
+
+def _merge_image_sources(
+    image_path: str | None,
+    image_paths: list[str] | None,
+    image_base64: str | None,
+    image_base64s: list[str] | None,
+    image_mime: str | None,
+    image_mimes: list[str] | None,
+) -> tuple[list[str], list[str], list[str]]:
+    """
+    将"单图"与"多图"参数合并，返回 (all_paths, all_b64s, all_mimes)。
+    - image_path 插入路径列表首位，并对路径去重（保留首次出现顺序）。
+    - image_base64 插入 base64 列表首位（base64 序列不去重，顺序即语义）。
+    """
+    # 路径合并，去重保序
+    seen: set[str] = set()
+    all_paths: list[str] = []
+    if image_path and image_path not in seen:
+        all_paths.append(image_path)
+        seen.add(image_path)
+    for p in (image_paths or []):
+        if p and p not in seen:
+            all_paths.append(p)
+            seen.add(p)
+
+    # base64 合并（不去重）
+    all_b64s: list[str] = []
+    all_mimes: list[str] = []
+    if image_base64:
+        all_b64s.append(image_base64)
+        all_mimes.append(image_mime or "image/png")
+    for idx, b64 in enumerate(image_base64s or []):
+        all_b64s.append(b64)
+        mimes_list = image_mimes or []
+        all_mimes.append(mimes_list[idx] if idx < len(mimes_list) else "image/png")
+
+    return all_paths, all_b64s, all_mimes
 
 
 class APIClient:
@@ -64,6 +122,9 @@ class APIClient:
         image_path: str | None = None,
         image_base64: str | None = None,
         image_mime: str | None = None,
+        image_paths: list[str] | None = None,
+        image_base64s: list[str] | None = None,
+        image_mimes: list[str] | None = None,
         model: str | None = None,
     ) -> str:
         """
@@ -72,6 +133,9 @@ class APIClient:
         image_path: 可选，本地图片路径（与 image_base64 二选一）
         image_base64: 可选，图片 base64（与 image_path 二选一）
         image_mime: 与 image_base64 配合使用，如 image/png
+        image_paths: 多张本地图片路径列表
+        image_base64s: 多张图片 base64 列表
+        image_mimes: 多张图片 mime_type 列表
         返回: 助手回复的文本。
         """
         last_err: Exception | None = None
@@ -83,6 +147,9 @@ class APIClient:
                         image_path=image_path,
                         image_base64=image_base64,
                         image_mime=image_mime,
+                        image_paths=image_paths,
+                        image_base64s=image_base64s,
+                        image_mimes=image_mimes,
                         model=model,
                     )
                 # OpenAI 兼容接口（DeepSeek / GPT / 自定义节点）
@@ -91,6 +158,9 @@ class APIClient:
                     image_path=image_path,
                     image_base64=image_base64,
                     image_mime=image_mime,
+                    image_paths=image_paths,
+                    image_base64s=image_base64s,
+                    image_mimes=image_mimes,
                     model=model,
                 )
             except (requests.Timeout, requests.ConnectionError) as e:
@@ -115,18 +185,27 @@ class APIClient:
         image_path: str | None = None,
         image_base64: str | None = None,
         image_mime: str | None = None,
+        image_paths: list[str] | None = None,
+        image_base64s: list[str] | None = None,
+        image_mimes: list[str] | None = None,
         model: str | None = None,
     ) -> str:
         """Gemini REST API：generateContent，支持 inline_data 图片。"""
         parts = []
 
+        # 合并单图和多图（去重）
+        i_paths, i_b64s, i_mimes = _merge_image_sources(
+            image_path, image_paths, image_base64, image_base64s, image_mime, image_mimes
+        )
+
         # 若提供图片，先插入图片 part
-        if image_path:
-            b64, mime = _image_to_base64(image_path)
+        for p in i_paths:
+            b64, mime = _image_to_base64(p)
             parts.append({"inline_data": {"mime_type": mime, "data": b64}})
-        elif image_base64:
-            mime = image_mime or "image/png"
-            parts.append({"inline_data": {"mime_type": mime, "data": image_base64}})
+
+        for i, b64 in enumerate(i_b64s):
+            mime = i_mimes[i] if i < len(i_mimes) else "image/png"
+            parts.append({"inline_data": {"mime_type": mime, "data": b64}})
 
         # 合并所有文本为一条 user content
         text_parts = []
@@ -161,6 +240,7 @@ class APIClient:
         # 解析候选中的文本
         candidates = data.get("candidates", [])
         if not candidates:
+            logger.warning("Gemini 响应中 candidates 为空，返回空字符串")
             return ""
         parts_out = candidates[0].get("content", {}).get("parts", [])
         for p in parts_out:
@@ -175,6 +255,9 @@ class APIClient:
         image_path: str | None = None,
         image_base64: str | None = None,
         image_mime: str | None = None,
+        image_paths: list[str] | None = None,
+        image_base64s: list[str] | None = None,
+        image_mimes: list[str] | None = None,
         model: str | None = None,
     ) -> str:
         """
@@ -197,30 +280,33 @@ class APIClient:
             "Content-Type": "application/json",
         }
 
-        # 若传入图片，采用 OpenAI 视觉兼容的 content=[{type:text...},{type:image_url...}] 结构
-        if image_path and not image_base64:
-            b64, mime = _image_to_base64(image_path)
-            image_base64, image_mime = b64, mime
+        # 合并图片（去重）
+        i_paths, i_b64s, i_mimes = _merge_image_sources(
+            image_path, image_paths, image_base64, image_base64s, image_mime, image_mimes
+        )
+        image_blocks = []
+        for p in i_paths:
+            b64, mime = _image_to_base64(p)
+            image_blocks.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
+
+        for i, b64 in enumerate(i_b64s):
+            mime = i_mimes[i] if i < len(i_mimes) else "image/png"
+            image_blocks.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
 
         oai_messages: list[dict] = []
         for m in messages:
             role = m.get("role", "user")
             content = m.get("content", "")
-            if image_base64 and role == "user":
-                mime = image_mime or "image/png"
+            if image_blocks and role == "user":
+                # 将文本和所有图片混合
+                content_list = [{"type": "text", "text": str(content)}] + image_blocks
                 oai_messages.append(
                     {
                         "role": "user",
-                        "content": [
-                            {"type": "text", "text": str(content)},
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": f"data:{mime};base64,{image_base64}"},
-                            },
-                        ],
+                        "content": content_list,
                     }
                 )
-                image_base64 = None  # 只附带一次
+                image_blocks = []  # 只附带一次
             else:
                 oai_messages.append({"role": role, "content": str(content)})
 

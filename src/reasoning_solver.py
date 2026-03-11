@@ -4,10 +4,15 @@
 生成教辅级 solved_answers.json（含 solution_process, knowledge_points, alternative_methods, extensions）。
 """
 import json
+import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from .api_client import APIClient
 from .pdf_processor import get_output_base, load_chapter_config
+from .logger import logger
+from .constants import FAILURE_PREFIX, SOLVED_ANSWERS_FILE, SOLVE_FAILURES_FILE
 
 
 REASONING_SYSTEM = """你是一名学术造诣深厚且教学经验丰富的大学理科教授，负责编写“教辅级”参考答案。
@@ -26,20 +31,60 @@ REASONING_SYSTEM = """你是一名学术造诣深厚且教学经验丰富的大�
 - alternative_methods: 如果有一题多解，请详细写出并对这些方法进行总结（如不同方法的优缺点，体现了哪些不同看问题的角度）。你不必总是在这个部分输出内容，不必将本质完全相同或相似的方法牵强地说成是“一题多解”，你可以大胆输出空字符串 ""。
 - extensions: 如果有值得积累和记忆的二级结论，请务必列出，帮助学生积累（这里的“二级结论”是一些超出课程考核本身基础要求的高级引理或高阶拓展，往往能够简化题目的求解，或提供更高的视角来看待这个问题）。你不必总是输出这个内容，不必将基础知识视作“二级结论”，不必牵强地为一些没有高等背景的题生成“二级结论”部分，你可以大胆地输出空字符串 ""。
 
-JSON 中 LaTeX 的转义规则（必须遵守，否则会出现 rac、heta 等乱码）：
-- 在 JSON 字符串里，单个反斜杠 \\f 会被解析成换页符、\\t 会变成制表符，导致 \\frac、\\theta 等被破坏。
-- 所有 LaTeX 反斜杠必须写成双反斜杠，例如：\\\\frac{1}{2}、\\\\theta、\\\\alpha、\\\\beta、\\\\begin{equation}、\\\\end{equation}、\\\\textbf{注：...}。这样解析后才能得到正确的 \\frac、\\theta。
-- 换行请用真实换行，不要写 \\n，不要写 \\n！！！
+JSON 中关于 LaTeX 的编写规则：
+- 建议你使用原生的 LaTeX 语法进行公式表达即可，例如：\\frac{1}{2}、\\theta、\\alpha、\\begin{equation}、\\end{equation} 等等。不要试图使用四条斜杠 `\\\\`，直接按照写 LaTeX 源码的直觉来即可。
+- 对于换行，你可以使用字面量的回车换行，不需要在字符串里硬写 `\\n` 这种控制字符。
 
-禁止 Markdown：禁止使用 **加粗**星号、# 标题、1. 2. 列表。加粗一律用 \\\\textbf{...}，列表用 \\\\begin{itemize} \\\\item ... \\\\end{itemize}。
+禁止 Markdown：禁止使用 **加粗**星号、# 标题、1. 2. 列表。加粗一律用 \\textbf{...}，列表用 \\begin{itemize} \\item ... \\end{itemize}。
 
 LaTeX 规范（防冲突与排版）：
-- 使用 \\\\label{} 时必须带题号前缀，例如 \\\\label{eq:2-1-1}。
+- 使用 \\label{} 时必须带题号前缀，例如 \\label{eq:2-1-1}。
 - 不要使用任何 \\usepackage，不要输出 \\begin{document}。
-- 行内数学必须放在 $...$ 中：例如 $\\\\mathcal{E}$、$\\\\nabla \\\\cdot \\\\mathbf{E}$、$\\\\neq$、$\\\\ref{eq:2-1-1}$。禁止在文字中单独写 \\\\mathcal、\\\\mathbf、\\\\nabla、\\\\ref、\\\\neq 等而不加 $，否则会报 “allowed only in math mode” 或 “Missing $ inserted”。
+- 行内数学必须放在 $...$ 中：例如 $\\mathcal{E}$、$\\nabla \\cdot \\mathbf{E}$、$\\neq$、$\\ref{eq:2-1-1}$。禁止在文字中单独写 \\mathcal、\\mathbf、\\nabla、\\ref、\\neq 等而不加 $，否则会报 “allowed only in math mode” 或 “Missing $ inserted”。
 
-优雅降级：若题目引用了正文公式（如“证明式 3.16”）而你没有正文上下文，请基于专业知识推断最可能的公式进行解答，并在答案开头用 \\\\textbf{注：本解答假设式 3.16 为 [你推断的公式]。} 注明。"""
+优雅降级：若题目引用了正文公式（如“证明式 3.16”）而你没有正文上下文，请基于专业知识推断最可能的公式进行解答，并在答案开头用 \\textbf{注：本解答假设式 3.16 为 [你推断的公式] 且继续。} 注明。"""
 
+REASONING_SYSTEM_EN = """You are a university professor with deep academic expertise and rich teaching experience, responsible for writing "textbook-level" reference solutions.
+Your teaching style is **rigorous, formal, detailed in derivations, and emphasizes physical intuition (for physics-related problems)**.
+Answer in English. For specialized terminology, you can provide Chinese translations in parentheses if appropriate.
+
+**Identity and Core Principles:**
+1. **Avoid popularization analogies**: Do not use science journalism-style metaphors. Use professional terminology directly.
+2. **Mathematical derivations first**: Answers must show complete logical chains. Do not directly give results (e.g., "obviously", "it follows") unless they are basic algebraic manipulations. Avoid defensive proofs.
+3. **Physical intuition combined**: When establishing equations, explain the physical origin of each term; after obtaining results, briefly analyze the physical meaning.
+
+**Output Format**: Strictly output a single JSON object only, without markdown code blocks. Include the following keys:
+- solution_process: LaTeX source code of the solution process (do not use \\usepackage, do not output \\begin{document}).
+- knowledge_points: Summary of basic knowledge points involved in this problem (plain text or simple LaTeX lists).
+- alternative_methods: If there are multiple solution methods, provide them in detail and summarize these approaches. You don't need to always output this section, and you can boldly output an empty string "".
+- extensions: If there are worth-remembering second-level conclusions, list them to help students accumulate knowledge. You can boldly output an empty string if not applicable.
+
+**LaTeX Rules in JSON:**
+- Use native LaTeX syntax for formulas, e.g., \\frac{1}{2}, \\theta, \\alpha, \\begin{equation}, \\end{equation}.
+- For line breaks, use literal newlines, do not write control characters like `\\n`.
+
+**Forbidden Markdown**: No **bold** asterisks, # headers, numbered lists. Use \\textbf{...} for bold and \\begin{itemize} \\item ... \\end{itemize} for lists.
+
+**LaTeX Standards:**
+- When using \\label{}, include the problem number prefix, e.g., \\label{eq:2-1-1}.
+- Do not use any \\usepackage, do not output \\begin{document}.
+- Inline math must be in $...$ delimiters.
+
+**Graceful Degradation**: If the problem references equations from the main text (e.g., "prove equation 3.16") and you lack context, infer the most likely equation based on professional knowledge and note at the beginning."""
+
+
+def get_reasoning_system_prompt(language: str = "zh") -> str:
+    """获取推理系统提示词（支持多语言）。
+    
+    Args:
+        language: 语言代码，'zh' 为中文，'en' 为英文。
+    
+    Returns:
+        对应语言的系统提示词。
+    """
+    if language == "en":
+        return REASONING_SYSTEM_EN
+    return REASONING_SYSTEM
 
 def _fix_json_control_chars(s: str) -> str:
     """将 JSON 字符串值内的未转义控制字符转为合法转义，避免 Invalid control character。"""
@@ -82,28 +127,8 @@ def _fix_json_control_chars(s: str) -> str:
 
 def _fix_json_invalid_escapes(s: str) -> str:
     """修复 JSON 中非法反斜杠（如 LaTeX），使 json.loads 能解析。"""
-    result = []
-    i = 0
-    while i < len(s):
-        if s[i] == "\\" and i + 1 < len(s):
-            n = s[i + 1]
-            if n in '"\\/bfnrt':
-                result.append(s[i : i + 2])
-                i += 2
-                continue
-            if n == "u" and i + 5 <= len(s):
-                hex_part = s[i + 2 : i + 6]
-                if len(hex_part) == 4 and all(c in "0123456789abcdefABCDEF" for c in hex_part):
-                    result.append(s[i : i + 6])
-                    i += 6
-                    continue
-            result.append("\\\\")
-            result.append(n)
-            i += 2
-            continue
-        result.append(s[i])
-        i += 1
-    return "".join(result)
+    import re
+    return re.sub(r'(?<!\\)\\(?!["\\/u])', r'\\\\', s)
 
 
 def _extract_json_object(text: str) -> dict:
@@ -172,7 +197,8 @@ def solve_one_task(
     raw = _call(base_user)
     try:
         obj = _extract_json_object(raw)
-    except Exception:
+    except Exception as first_err:
+        logger.warning("题目 %s 首次 JSON 解析失败（%s），发起重试...", qid, type(first_err).__name__)
         # 常见原因：输出过长被截断导致 JSON 未闭合；或模型夹杂了额外文本导致解析失败。
         # 处理：请求模型重新输出一份“更短但完整”的 JSON（字段必须齐全），通常能显著降低截断概率。
         retry_user = (
@@ -203,10 +229,12 @@ def run(
     config_path: str | Path | None = None,
     provider: str = "gemini",
     model: str | None = None,
+    max_workers: int = 1,
 ) -> list[dict]:
     """
     读取 extracted_tasks.json，逐题求解，写入 solved_answers.json。
     若未传 output_base，则根据 config_path 的 book_title 得到 output/<book_title>。
+    max_workers > 1 时使用线程池并发求解以加速。
     """
     root = Path(__file__).resolve().parent.parent
     root_dir = root_dir or root
@@ -233,30 +261,86 @@ def run(
 
     client = APIClient(provider=provider)
     task_ids: list[str] = [t.get("question_id", "") for t in tasks]
+    total = len(task_ids)
+    done_count = len(ans_by_id)
+    logger.info("共 %d 题，已有缓存 %d 题，待求解 %d 题", total, done_count, total - done_count)
+
+    # 用锁保护 ans_by_id 和写盘操作，确保并发安全
+    _lock = threading.Lock()
 
     def _ordered_answers() -> list[dict]:
-        # 关键：每次写盘都按 extracted_tasks.json 的顺序写“全量已存在答案”，
-        # 避免中途写盘时把文件截断成“前缀”，从而导致后续题目被迫重跑。
         return [ans_by_id[qid] for qid in task_ids if qid in ans_by_id]
 
-    for task in tasks:
+    def _flush():
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(_ordered_answers(), f, ensure_ascii=False, indent=2)
+
+    # 筛选待求解的题目
+    pending_tasks = []
+    for idx, task in enumerate(tasks):
         qid = task.get("question_id", "")
         if not qid:
             continue
         if qid in ans_by_id:
-            continue
+            existing_ans = ans_by_id[qid].get("solution_process", "")
+            if FAILURE_PREFIX in existing_ans:
+                logger.info("题目 %s: 检测到上次失败记录，将重新生成", qid)
+                with _lock:
+                    ans_by_id.pop(qid, None)
+            else:
+                continue
+        pending_tasks.append((idx, task))
+
+    solved_in_session = 0
+    effective_workers = min(max(max_workers, 1), len(pending_tasks) or 1)
+
+    def _solve_one(idx_task):
+        idx, task = idx_task
+        qid = task.get("question_id", "")
+        logger.info("求解 [%d/%d] 题目 %s ...", idx + 1, total, qid)
         try:
-            ans_by_id[qid] = solve_one_task(client, task, root_dir, model=model)
+            result = solve_one_task(client, task, root_dir, model=model)
         except Exception as e:
-            ans_by_id[qid] = {
+            logger.error("题目 %s 求解失败: %s", qid, e)
+            result = {
                 "question_id": qid,
                 "solution_process": f"[解答生成失败: {e}]",
                 "knowledge_points": "",
                 "alternative_methods": "",
                 "extensions": "",
             }
-        # 每解完一题立即写回（全量），便于断点续传且不丢后面的已有答案
-        with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(_ordered_answers(), f, ensure_ascii=False, indent=2)
+        with _lock:
+            ans_by_id[qid] = result
+            _flush()
+        return qid, FAILURE_PREFIX not in result.get("solution_process", "")
 
-    return _ordered_answers()
+    if effective_workers <= 1:
+        # 串行模式
+        for idx_task in pending_tasks:
+            qid, ok = _solve_one(idx_task)
+            if ok:
+                solved_in_session += 1
+    else:
+        logger.info("使用 %d 个线程并发求解", effective_workers)
+        with ThreadPoolExecutor(max_workers=effective_workers) as pool:
+            futures = {pool.submit(_solve_one, it): it for it in pending_tasks}
+            for future in as_completed(futures):
+                qid, ok = future.result()
+                if ok:
+                    solved_in_session += 1
+
+    # 汇总失败题目，写入单独文件
+    all_answers = _ordered_answers()
+    failed = [a for a in all_answers if a.get("solution_process", "").startswith(FAILURE_PREFIX)]
+    if failed:
+        fail_path = output_base / SOLVE_FAILURES_FILE
+        with open(fail_path, "w", encoding="utf-8") as f:
+            json.dump(
+                [{"question_id": a["question_id"], "reason": a["solution_process"]} for a in failed],
+                f, ensure_ascii=False, indent=2,
+            )
+        logger.warning("本次共 %d 题求解失败，详见 %s", len(failed), fail_path)
+    else:
+        logger.info("本次所有题目求解成功（本次新增 %d 题）", solved_in_session)
+
+    return all_answers

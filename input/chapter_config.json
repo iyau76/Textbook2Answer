@@ -1,19 +1,51 @@
 {
-  "book_title": "量子力学",
+  "book_title": "量子力学(1)",
   "author_model": "gemini-3-flash-preview",
-  "pdf_path": "input/量子力学讲义.pdf",
+  "pdf_path": "input/量子力学.pdf",
   "chapters": [
     {
       "chapter_name": "第一章 量子力学的历史渊源",
-      "pages": [15]
+      "pages": [1]
     },
     {
-      "chapter_name": "第二章 波函数与 Schrödinger 方程",
-      "pages": [21, 27]
+      "chapter_name": "第二章 波函数与薛定谔方程",
+      "pages": [3]
     },
     {
       "chapter_name": "第三章 一维势场中的粒子",
-      "pages": [31, 35, 38, 41]
-    }
+      "pages": [5, 6]
+    },
+    {
+      "chapter_name": "第四章 力学量算符",
+      "pages": [8]
+    },
+    {
+      "chapter_name": "第五章 量子力学中的对称性与守恒量",
+      "pages": [10]
+    },
+    {
+      "chapter_name": "第六章 中心力场",
+      "pages": [12, 13]
+    },
+    {
+      "chapter_name": "第七章 量子力学中的代数方法",
+      "pages": [15, 16]
+    },
+    {
+      "chapter_name": "第八章 电子自旋",
+      "pages": [18, 19]
+    },
+    {
+      "chapter_name": "第九章 带电粒子在电磁场中的运动",
+      "pages": [21, 22]
+    },
+    {
+      "chapter_name": "第十章 微扰论",
+      "pages": [24]
+    },
+    {
+      "chapter_name": "第十一章 散射理论",
+      "pages": [26, 27]
+    }    
   ]
 }

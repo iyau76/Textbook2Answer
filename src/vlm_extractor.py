@@ -8,26 +8,28 @@ import re
 from pathlib import Path
 
 from .api_client import APIClient
+from .logger import logger
 from .pdf_processor import load_chapter_config, get_all_pages, get_output_base, render_pdf_pages
 
 
-EXTRACT_SYSTEM = """你是一个专业的教材解析专家。你的任务是从教材页面图片中提取所有的课后习题。
+EXTRACT_SYSTEM = """你是一个专业的教材解析专家。你的任务是从一章教材的多张页面图片中提取所有的课后习题。
 
 要求：
-1. 必须输出纯净的 JSON 数组，每个元素包含字段：question_id, content, has_image。
+1. 必须输出纯净的 JSON 数组，每个元素包含字段：question_id, content, has_image, page_num。
 2. question_id 保留教材中的原始题号（如 "1", "2-1", "2-2" 等）。
-3. content 为该题的完整文字题干。若题干中含数学符号或公式，必须用 LaTeX 并包在 $...$（行内）或 \\[ \\]（独立公式）中，例如 $\\\\mathcal{E}$、$\\\\mathbf{k}$、$\\\\epsilon_r \\\\neq 0$、\\[ E = mc^2 \\]。禁止在文字中单独写 \\\\mathcal、\\\\mathbf、\\\\neq 等而不加 $，否则生成的文档会报“allowed only in math mode”错误。
+3. content 为该题的完整文字题干。若题干中含数学符号或公式，必须用 LaTeX 并包在 $...$（行内）或 \\[ \\]（独立公式）中，例如 $\\mathcal{E}$、$\\mathbf{k}$、$\\epsilon_r \\neq 0$。\\[ E = mc^2 \\]。禁止在文字中单独写 \\mathcal、\\mathbf、\\neq 等而不加 $，否则生成的文档会报“allowed only in math mode”错误。
 4. 如果题目旁边的配图是解题不可或缺的（如电路图、几何图形、数据图表），将 has_image 设为 true，否则设为 false。
-5. 不要输出任何 markdown 标记（如 ```json），只输出一个合法的 JSON 数组。
-6. 如果习题用英文书写，请务必将习题内容翻译成中文。
+5. 对于跨页被截断的习题，请自动拼接完整的题目（上下文推理），保证其为一道完整的题。
+6. page_num 请判断这道题主要发生在哪一教材页码（填入数字即可），不能确定则填本章的第一页。
+7. 不要输出任何 markdown 标记（如 ```json），只输出一个合法的 JSON 数组。
+8. 如果习题用英文书写，请务必将习题内容翻译成中文。
 
-JSON 与 LaTeX 转义（必须严格遵守，否则会出现乱码）：
-- 在 JSON 字符串中，反斜杠是转义符。\\f 会被解析为换页符、\\t 会被解析为制表符，导致 \\frac 变成 rac、\\theta 变成 heta。
-- 因此所有 LaTeX 命令的反斜杠必须写成双反斜杠，例如：\\\\frac{1}{2}、\\\\theta、\\\\alpha、\\\\begin{equation}。这样解析后才能得到正确的 \\frac、\\theta。
-- 换行请直接使用真实换行，不要在字符串里写 \\n 表示换行。
+JSON 与 LaTeX 转义：
+- 建议你使用原生的 LaTeX 语法进行公式表达即可，例如：\\frac{1}{2}、\\theta、\\alpha、\\begin{equation}、\\end{equation} 等等。按照写 LaTeX 源码的直觉来即可。
+- 对于换行，你可以使用字面量的回车换行，不需要在字符串里硬写控制字符 \\n。
 
 禁止 Markdown 语法：
-- 不要使用 **加粗** 或 1. 2. 列表。加粗请用 LaTeX：\\\\textbf{文字}；列表请用 \\\\begin{itemize} \\\\item ... \\\\end{itemize}。"""
+- 不要使用 **加粗** 或 1. 2. 列表。加粗请用 LaTeX：\\textbf{文字}；列表请用 \\begin{itemize} \\item ... \\end{itemize}。"""
 
 def _sanitize_task_content(s: str) -> str:
     """
@@ -53,69 +55,59 @@ def _sanitize_task_content(s: str) -> str:
 
 
 
-def _fix_json_control_chars(s: str) -> str:
-    """将 JSON 字符串值内的未转义控制字符（如换行、制表）转为合法转义，避免 Invalid control character。"""
+def _clean_json_string(s: str) -> str:
+    """清理并修复大模型输出的 JSON 字符串，使其符合标准 JSON 格式。"""
+    if not s:
+        return s
+    
+    start_idx = s.find('{')
+    arr_start_idx = s.find('[')
+    if start_idx == -1 and arr_start_idx == -1:
+        return s
+    start = start_idx if arr_start_idx == -1 else (arr_start_idx if start_idx == -1 else min(start_idx, arr_start_idx))
+    
+    end_idx = s.rfind('}')
+    arr_end_idx = s.rfind(']')
+    end = end_idx if arr_end_idx == -1 else (arr_end_idx if end_idx == -1 else max(end_idx, arr_end_idx))
+    
+    if end < start:
+        return s
+        
+    json_str = s[start:end+1]
+    
+    json_str = re.sub(r'(?<!\\)\\(?!["\\/bfnrtu])', r'\\\\', json_str)
+    
     result = []
-    i = 0
     in_string = False
     escape_next = False
-    while i < len(s):
-        c = s[i]
+    
+    for i, c in enumerate(json_str):
         if escape_next:
             result.append(c)
             escape_next = False
-            i += 1
             continue
-        if c == "\\" and in_string:
+        if c == '\\':
             result.append(c)
             escape_next = True
-            i += 1
             continue
         if c == '"':
-            result.append(c)
             in_string = not in_string
-            i += 1
+            result.append(c)
             continue
-        if in_string and ord(c) < 32:
-            # 控制字符转为 JSON 转义
-            if c == "\n":
-                result.append("\\n")
-            elif c == "\r":
-                result.append("\\r")
-            elif c == "\t":
-                result.append("\\t")
-            else:
+        if in_string:
+            if c == '\n':
+                result.append('\\n')
+            elif c == '\r':
+                result.append('\\r')
+            elif c == '\t':
+                result.append('\\t')
+            elif ord(c) < 32:
                 result.append(f"\\u{ord(c):04x}")
-            i += 1
-            continue
-        result.append(c)
-        i += 1
-    return "".join(result)
-
-
-def _fix_json_invalid_escapes(s: str) -> str:
-    """修复 JSON 中非法反斜杠（如 LaTeX \\frac、\\alpha），使 json.loads 能解析。"""
-    result = []
-    i = 0
-    while i < len(s):
-        if s[i] == "\\" and i + 1 < len(s):
-            n = s[i + 1]
-            if n in '"\\/bfnrt':
-                result.append(s[i : i + 2])
-                i += 2
-                continue
-            if n == "u" and i + 5 <= len(s):
-                hex_part = s[i + 2 : i + 6]
-                if len(hex_part) == 4 and all(c in "0123456789abcdefABCDEF" for c in hex_part):
-                    result.append(s[i : i + 6])
-                    i += 6
-                    continue
-            result.append("\\\\")
-            result.append(n)
-            i += 2
-            continue
-        result.append(s[i])
-        i += 1
+            else:
+                result.append(c)
+        else:
+            result.append(c)
+            
     return "".join(result)
 
 
@@ -142,8 +134,7 @@ def _extract_json_array(text: str) -> list:
                         end = i + 1
                         break
             if end > 0:
-                segment = _fix_json_invalid_escapes(text[obj_idx:end])
-                segment = _fix_json_control_chars(segment)
+                segment = _clean_json_string(text[obj_idx:end])
                 return [json.loads(segment)]
         raise ValueError("未找到 JSON 数组或对象")
     depth = 0
@@ -158,48 +149,57 @@ def _extract_json_array(text: str) -> list:
                 break
     if end_idx == -1:
         raise ValueError("JSON 数组未闭合")
-    segment = _fix_json_invalid_escapes(text[start_idx:end_idx])
-    segment = _fix_json_control_chars(segment)
+    segment = _clean_json_string(text[start_idx:end_idx])
     return json.loads(segment)
 
 
-def extract_tasks_from_image(
+def extract_tasks_from_chapter(
     client: APIClient,
-    image_path: str | Path,
     chapter_name: str,
-    page_num: int,
+    page_nums: list[int],
     images_output_dir: str | Path,
     root: str | Path | None = None,
     output_base: str | Path | None = None,
     model: str | None = None,
 ) -> list[dict]:
     """
-    对单张页面图调用 VLM，提取习题列表。为每条记录补充 chapter_name, page_num, image_path。
-    image_path 存为相对项目根路径，供后续推理模块定位图片。若提供 root 与 output_base，则 rel_path = (output_base/images/page_N.png).relative_to(root)。
+    对指定章节的多张页面图调用 VLM，提取习题列表。为每条记录补充 chapter_name, page_num, image_path。
     """
-    image_path = Path(image_path)
     images_output_dir = Path(images_output_dir)
-    if root is not None and output_base is not None:
-        root, output_base = Path(root), Path(output_base)
-        rel_path = (output_base / "images" / f"page_{page_num}.png").relative_to(root).as_posix()
-    else:
-        rel_path = f"output/images/page_{page_num}.png"
+    image_paths = []
+    
+    for pnum in page_nums:
+        img_path = images_output_dir / f"page_{pnum}.png"
+        image_paths.append(str(img_path))
 
-    user = f"当前章节名：{chapter_name}\n本页 PDF 页码：{page_num}\n请从本张教材页面图片中提取所有课后习题，输出 JSON 数组（仅 question_id, content, has_image）。"
+    pages_str = ", ".join(map(str, page_nums))
+    user = f"当前章节名：{chapter_name}\n包含的本节所有教材页码：{pages_str}\n请结合上下文，如果发现跨页或者分开的题目能够组装成连贯的一道题，请予以拼装，确保题目的完整性。输出提取完成的 JSON 数组。"
+    
     raw = client.chat(
         [{"role": "system", "content": EXTRACT_SYSTEM}, {"role": "user", "content": user}],
-        image_path=str(image_path),
+        image_paths=image_paths,
         model=model,
     )
     items = _extract_json_array(raw)
     out = []
     for it in items:
+        pnum = it.get("page_num")
+        try:
+            pnum = int(pnum)
+        except (ValueError, TypeError):
+            pnum = page_nums[0] if page_nums else 0
+            
+        if root is not None and output_base is not None:
+            rel_path = (Path(str(output_base)) / "images" / f"page_{pnum}.png").relative_to(Path(str(root))).as_posix()
+        else:
+            rel_path = f"output/images/page_{pnum}.png"
+
         rec = {
             "chapter_name": chapter_name,
             "question_id": str(it.get("question_id", "")),
             "content": _sanitize_task_content(str(it.get("content", ""))),
             "has_image": bool(it.get("has_image", False)),
-            "page_num": page_num,
+            "page_num": pnum,
             "image_path": rel_path,
         }
         out.append(rec)
@@ -253,28 +253,45 @@ def run(
 
     # 断点续传：已存在的 extracted_tasks.json 中已提取的页码不再重复调用 VLM
     Path(output_json_path).parent.mkdir(parents=True, exist_ok=True)
-    if Path(output_json_path).exists():
+    if Path(str(output_json_path)).exists():
         with open(output_json_path, "r", encoding="utf-8") as f:
             all_tasks = json.load(f)
-        done_pages = {t["page_num"] for t in all_tasks}
+        done_pages = {int(t["page_num"]) for t in all_tasks if t.get("page_num") is not None}
     else:
         all_tasks = []
         done_pages = set()
 
     client = APIClient(provider=provider)
-    for pnum in all_pages:
-        if pnum in done_pages:
+    for ch in config.get("chapters", []):
+        chapter_name = ch.get("chapter_name", "")
+        pages = ch.get("pages", [])
+        if not pages:
             continue
-        chapter_name = page_to_chapter.get(pnum, "")
-        img = images_dir / f"page_{pnum}.png"
-        if not img.exists():
+            
+        # 如果这一章有任何一页已经提取过，则跳过（断点续传保守策略）
+        if any(int(p) in done_pages for p in pages):
+            logger.info("章节 [%s] 已提取，跳过", chapter_name)
             continue
-        tasks = extract_tasks_from_image(
-            client, img, chapter_name, pnum, images_dir, root=root, output_base=output_base, model=model
+
+        valid_pages = []
+        for pnum in pages:
+            img = images_dir / f"page_{pnum}.png"
+            if img.exists():
+                valid_pages.append(pnum)
+                
+        if not valid_pages:
+            continue
+            
+        logger.info("提取章节 [%s]，共 %d 页...", chapter_name, len(valid_pages))
+        tasks = extract_tasks_from_chapter(
+            client, chapter_name, valid_pages, images_dir, root=root, output_base=output_base, model=model
         )
+        logger.info("章节 [%s]: 提取到 %d 道题", chapter_name, len(tasks))
         all_tasks.extend(tasks)
-        done_pages.add(pnum)
-        # 每处理完一页立即写回，便于断点续传
+        done_pages.update(valid_pages)
+        
+        # 每处理完一章立即写回，便于断点续传
         with open(output_json_path, "w", encoding="utf-8") as f:
             json.dump(all_tasks, f, ensure_ascii=False, indent=2)
+            
     return all_tasks
