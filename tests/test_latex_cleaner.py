@@ -10,32 +10,11 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # 通过内部引入方式获取该函数进行单元测试
-from src.latex_builder import build_chapters
+from src.latex_builder import _clean_latex_text
 
-# 这里为了能单独测试局部内部函数，我们可以通过黑科技，
-# 但最好的测试方法是把它剥离或者直接用 exec / mock 提取
-# 因为 _clean_latex_text 是在 build_chapters 内部局部定义的。
-# 为便于测试，我们将借用 python ast 或者直接用正则抓取函数体来测试，
-# 或者最简单，我们在测试用例里提取源码！
-import inspect
-import textwrap
 
 class TestLatexCleaner(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        # 巧妙提取 build_chapters 内部的 _clean_latex_text 以供测试
-        source = inspect.getsource(build_chapters)
-        # 寻找 def _clean_latex_text
-        start = source.find("def _clean_latex_text")
-        # 寻找 def _norm，它是下一个
-        end = source.find("def _norm", start)
-        cleaner_source = source[start:end]
-        # 去掉缩进
-        cleaner_source = textwrap.dedent(cleaner_source)
-        # 执行定义
-        namespace = {}
-        exec(cleaner_source, namespace)
-        cls.cleaner = namespace["_clean_latex_text"]
+    cleaner = staticmethod(_clean_latex_text)
 
     def test_api_error_message(self):
         """测试清理 API 报错信息中的下划线"""

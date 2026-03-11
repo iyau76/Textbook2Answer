@@ -26,17 +26,10 @@ def _clean_latex_text(s: str) -> str:
     # 1. 修复由于模型抛出的带下划线的错误信息导致编译失败的问题
     s = re.sub(r"\[解答生成失败.*?\]", lambda m: m.group(0).replace("_", "\\_"), s)
 
-    # 2. 修复误写的字面量 \n（严格处理）
-    # 第一步：删除所有在LaTeX命令后面的\n（如\begin{equation}\n, \label{...}\n等）
-    s = re.sub(r'(\\(?:begin|end|item|label|ref|eqref|cite|frac|mathbb|mathcal|textbf|textit|emph|gamma|alpha|beta|delta|lambda|mu|nu|omega|Gamma|Delta|Lambda|Pi|Sigma|Phi|Psi|Omega)\{[^}]*\})\n', r'\1\n', s)
-    s = re.sub(r'(\\(?:begin|end|item|label|ref|eqref|cite|frac|mathbb|mathcal|textbf|textit|emph)\{[^}]*\})\\n', r'\1\n', s)
-    
-    # 第二步：删除所有单独出现的\n（不在\n[a-zA-Z]的位置）
-    # 这会删除字面量的反斜杠-n
-    s = re.sub(r'\\n(?![a-zA-Z])', '', s)
-    
-    # 第三步：保留真正的\\n用于换行（这是JSON中的\\n）
+    # 2. 修复误写的字面量 \n：将 \\n 与 \n 都还原成真实换行
+    # 先处理双反斜杠，避免下一步重复匹配
     s = s.replace("\\\\n", "\n")
+    s = s.replace("\\n", "\n")
 
     # 2.5 修复 Markdown 加粗 (**文本** -> \textbf{文本})
     s = re.sub(r'\*\*(.*?)\*\*', r'\\textbf{\1}', s)
